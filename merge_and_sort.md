@@ -4,7 +4,7 @@ date: 2019-08-15 12:50:00
 tags:
 ---
 
-我们的用户持仓原本很简单，从一张单独的表A中做分页查询，按时间倒序排列，接口形式如下
+我们的用户持仓原本很简单，从一张单独的表A中做分页查询，按时间倒序排列，接口形式如下：
 
 ```
 /user/holding/list?userId={}&status={}&curPage={}&rows={}
@@ -12,7 +12,7 @@ tags:
 
 查询数据库时需要几个连表操作，较为复杂，不过能够满足分页查询的效率。
 
-# 多数据源归并分页，第一个实现（有bug）
+## 多数据源归并分页，第一个实现（有bug）
 
 产品提了一个需求，想要把另一类用户持仓放在一起展示。从表B中取出数据，排序规则相同，按时间倒序。
 
@@ -20,8 +20,8 @@ tags:
 
 ```java
 List<Resp> totalList = new ArrayList<>();
-totalList.addAll(getAList(req));
-totalList.addAll(getBList(req));
+totalList.addAll(getAListByLimitTime(req));
+totalList.addAll(getBListByLimitTime(req));
 return totalList.stream()
                 .sorted(Comparator.comparing(Resp::getCreateTime).reversed())
                 .limit(req.getRows())
@@ -37,7 +37,7 @@ return totalList.stream()
 
 这个实现简单而高效，但是上线后发现有丢数据的情况。因为我们有批量下单功能，导致许多持仓数据的createTime在毫秒级都相同。而查询时传入当页的最后一条时间戳，因此下一页中按小于此时间戳查询，就丢失了跨页的数据。
 
-# Redis归并排序分页，第二个实现
+## Redis归并排序分页，第二个实现
 
 由于此时接口已经上线，因此接口设计无法变更。那么如何处理跨页的数据丢失问题？客户端表示可以每页返回超过请求的rows数量，那么我们可以考虑在一页中把下一页中相同时间戳的数据一并返回。考虑避免修改数据访问层，在中间层处理。
 
@@ -47,7 +47,7 @@ String userStatusSetKey = RedisConstants.HOLDING + "userId:" + req.getUid() + "s
 
 if (!totalList.isEmpty()) {
       Set<ZSetOperations.TypedTuple<String>> sets = totalList.stream()
-              .map(holding -> (ZSetOperations.TypedTuple<String>) new DefaultTypedTuple<>(JsonUtils.beanToJson(holding), (double) loan.getCreateTime()))
+              .map(holding -> (ZSetOperations.TypedTuple<String>) new DefaultTypedTuple<>(JsonUtils.beanToJson(holding), (double) holding.getCreateTime()))
               .collect(Collectors.toSet());
       BoundZSetOperations<String, String> boundZSetOperations = redisTemplate.boundZSetOps(userStatusSetKey);
       boundZSetOperations.add(sets);
@@ -55,6 +55,7 @@ if (!totalList.isEmpty()) {
 ```
 
 获取数据的主要逻辑是通过Redis取数据，以实现翻页时的高效。
+
 ```java
 // 获取小于入参limitTime的所有数据（需要过滤掉等于limitTime的数据）
 BoundZSetOperations<String, String> boundZSetOperations = redisTemplate.boundZSetOps(userStatusSetKey);
@@ -86,8 +87,8 @@ return result;
 
 测试对于持仓较多的用户，这个方案性能过低，因此最终未能上线。
 
-# 覆盖索引，第三个实现
-第二个方案虽然未上线，但是思路有可取之处。我们现在面临两个问题：
+## 覆盖索引，第三个实现
+第二个方案虽然未上线，但是思路有可取之处。上面两个方案总结如下：
 1. 由于时间戳有重复，因此limitTime做入参是不可行的，需要分页方式查询。
 2. 由于是不同的数据源，因此需要以相同排序条件查出后归并。但是若通过标记id等辅助分页字段方式分页，则需要增加接口字段，增加复杂度。
 3. 全量数据归并后排序就不需要辅助字段，可保持接口参数不变，但是需要高效的查询全量数据方式。
