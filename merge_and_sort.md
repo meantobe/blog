@@ -7,16 +7,16 @@ tags:
 我们的用户持仓接口原本很简单，从一张单独的表A中做分页查询，按时间倒序排列，接口形式如下：
 
 ```
-/user/holding/list?userId={}&status={}&curPage={}&rows={}
+/user/holding/list?userId={}&status={}&pageNo={}&rows={}
 ```
 
 查询数据库时需要几个连表操作，较为复杂，不过能够满足分页查询的效率。
 
-## 第一个实现：通过排序字段取数后归并（有bug）
+## 多数据源归并分页，第一个实现（有bug）
 
 产品提了一个需求，想要把另一类用户持仓放在一起展示。从表B中取出数据，排序规则相同，按时间倒序。
 
-首先想到的方案是通过排序字段（时间戳）控制分页来归并数据。从A、B中各取N条数据，合并后取时间戳最大的前N条，核心代码如下
+首先想到的方案是通过时间戳控制分页来归并数据。从A、B中各取N条数据，合并后取时间戳最大的前N条，核心代码如下
 
 ```java
 List<Resp> queryPagedListByLimitTime(long userId, int status, int rows, long limitTime) {
@@ -48,7 +48,7 @@ LIMIT #{rows}
 
 这个实现简单而高效，但是上线后发现有丢数据的情况。因为系统有批量下单功能，导致许多持仓数据的createTime字段毫秒值都相同。而查询时传入当页的最后一条时间戳，因此下一页中按小于此时间戳查询，就丢失了跨页的数据。
 
-## 第二个实现：Redis归并排序分页
+## Redis归并排序分页，第二个实现
 
 由于此时接口已经上线，因此接口设计无法变更。那么如何处理跨页的数据丢失问题？客户端表示可以每页返回超过请求的rows数量，那么我们可以考虑在一页中把下一页中相同时间戳的数据一并返回。考虑避免修改数据访问层，在中间层处理。
 
@@ -98,7 +98,7 @@ List<Resp> queryPagedListFromRedis(long userId, int status, int rows, long limit
 
 测试对于持仓较多的用户，这个方案性能过低，因此最终未能上线。
 
-## 第三个实现：覆盖索引取排序字段后分页
+## 覆盖索引，第三个实现
 第二个方案虽然未上线，但是思路有可取之处。总结上面两个方案可知：
 1. 由于时间戳有重复，因此limitTime做入参是不可行的，需要分页方式查询。
 2. 由于数据源不同，因此需要以相同排序条件查出后归并。但是若通过标记id等辅助分页字段方式分页，则需要增加接口字段，增加复杂度。
@@ -106,7 +106,7 @@ List<Resp> queryPagedListFromRedis(long userId, int status, int rows, long limit
 
 由于排序时仅需要userId、status和createTime即可，因此获取全量数据可改为仅获取id、userId、status和createTime四个字段，排序后再通过id查询信息。
 
-增加查询四个字段的方法，结果包装为RespIds对象。数据库也需要建立userId、status和createTime三个字段的索引，使得这个查询可以通过覆盖索引直接返回，无须回表。
+增加查询四个字段的方法，结果包装为RespIds对象。数据库建立userId、status和createTime三个字段的索引，使得这个查询可以通过覆盖索引直接返回，无须回表。
 
 ```sql
 SELECT id, createTime
@@ -145,6 +145,7 @@ List<Resp> queryPagedListFromRedis(long userId, int status, int rows, int pageNo
                      .map(id -> respSet.getOrDefault(id.getId(), null))
                      .map(/* do business */)
                      .collect(Collectors.toList());
+}
 ```
 
 获取信息时queryDetails通过主键索引id查询，也可以保证效率。
@@ -152,7 +153,7 @@ List<Resp> queryPagedListFromRedis(long userId, int status, int rows, int pageNo
 对客户端接口参数中的limitTime改为pageNo，对于旧版本客户端limitTime稍作处理实现兼容。在此不赘述。
 
 ```
-/user/holding/list?userId={}&status={}&rows={}&pageNo={}
+/user/holding/list?userId={}&status={}&pageNo={}&rows={}
 ```
 
 方案三上线后和方案一效率基本相同，但是避免了方案一的遗漏数据的问题。且对于单个用户具有大量数据的情况下，方案三表现优于方案一。
