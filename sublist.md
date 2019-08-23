@@ -1,8 +1,14 @@
 ---
-title: CopyOnWriteArrayList的线程安全问题——subList
+title: CopyOnWriteArrayList的subList问题
 date: 2019-08-20 17:49:09
 tags: Java
 ---
+
+摘要：
+1. CopyOnWriteArrayList的subList仅是原始列表的视图，原始列表修改后会出现ConcurrentModificationException问题。
+2. 对CopyOnWriteArrayList的subList任何操作都需要获取读锁，效率低于ImmutableList。
+
+<!-- more -->
 
 Review代码时发现同事写了一段加载缓存并从缓存中获取部分数据的逻辑，使用CopyOnWriteArrayList实现，代码如下：
 
@@ -14,7 +20,7 @@ List<Info> getList(int start, int end) {
 }
 ```
 
-更新缓存时直接增删
+更新缓存时对CopyOnWriteArrayList进行操作：
 ```java
 void updateCache() {
     // some logic
@@ -23,7 +29,23 @@ void updateCache() {
 }
 ```
 
-这几个方法（`add`, `remove`, `subList`）都会获取`ReentrantLock`，看起来似乎没什么问题。但是写一个demo模拟多线程并发读并输出，一个线程修改列表，代码会抛出异常：
+这几个方法（`add`, `remove`, `subList`）都会获取`ReentrantLock`，看起来似乎没什么问题。但是写一个例子就会发现对subList操作时可能会抛出异常：
+
+```java
+public class CWALTest {
+    public static void main(String[] args) {
+        CopyOnWriteArrayList<Integer> list = new CopyOnWriteArrayList<>();
+        list.add(1);
+        list.add(2);
+        list.add(3);
+
+        List<Integer> sub = list.subList(1, 2);
+        list.add(4);
+        sub.get(0); // will throws ConcurrentModificationException
+    }
+}
+```
+异常信息如下：
 
 ```java
 Caused by: java.util.ConcurrentModificationException
@@ -31,7 +53,7 @@ Caused by: java.util.ConcurrentModificationException
 	at java.util.concurrent.CopyOnWriteArrayList$COWSubList.size(CopyOnWriteArrayList.java:1317)
 ```
 
-看一下CopyOnWriteArrayList中subList方法的代码，可以发现subList返回的是一个静态内部类COWSubList对象。
+查看CopyOnWriteArrayList中subList方法的代码，可以看到subList返回的是一个静态内部类COWSubList对象。
 
 ```java
 public List<E> subList(int fromIndex, int toIndex) {
@@ -91,4 +113,17 @@ void updateCache() {
 }
 ```
 
-此外，CopyOnWriteArrayList读取时需要加锁，不可变列表无需加锁。测试对于有大量读线程的情况下，ImmutableList效率远高于CopyOnWriteArrayList。
+ImmutableList的subList方法取的的是一个子类SubList，和COWSubList类似，仅是一个视图。但由于列表不可变，仅需要检查索引未越界即可。
+
+```java
+class SubList extends ImmutableList<E> {
+    final transient int offset;
+    final transient int length;
+
+    SubList(int offset, int length) {
+        this.offset = offset;
+        this.length = length;
+    }
+```
+
+此外，不可变列表无需加锁，避免了COWSubList中操作都需要获得锁的不便。测试对于有大量读线程的情况下，ImmutableList读取效率远高于COWSubList。

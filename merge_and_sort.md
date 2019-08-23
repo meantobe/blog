@@ -1,8 +1,18 @@
 ---
 title: 多数据源的高效归并分页排序
 date: 2019-08-15 12:50:00
-tags:
+tags: 
+- SQL
+- Redis
+- API Design
 ---
+
+摘要：
+1. 通过传递排序字段进行分页的策略及不足。
+2. 通过Redis Sorted Set进行分页的策略及问题。
+3. 通过覆盖索引分页后取数的策略。
+
+<!-- more -->
 
 我们的用户持仓接口原本很简单，从一张单独的表A中做分页查询，按时间倒序排列，接口形式如下：
 
@@ -65,7 +75,7 @@ void putUserDataIntoRedis(long userId) {
     totalList.add(bService.getAllList(userId));
     if (!totalList.isEmpty()) {
           Set<ZSetOperations.TypedTuple<Resp>> sets = totalList.stream()
-                  .map(holding -> (ZSetOperations.TypedTuple<Resp>) new DefaultTypedTuple<>(holding, (double) holding.getCreateTime()))
+                  .map(resp -> (ZSetOperations.TypedTuple<Resp>) new DefaultTypedTuple<>(resp, (double) resp.getCreateTime()))
                   .collect(Collectors.toSet());
           BoundZSetOperations<String, String> boundZSetOperations = redisTemplate.boundZSetOps(userSetKey);
           boundZSetOperations.add(sets);
@@ -85,7 +95,7 @@ List<Resp> queryPagedListFromRedis(long userId, int rows, int pageNo) {
 }
 ```
 
-由于此时接口已经上线，因此接口设计无法变更。那么如何处理跨页的数据丢失问题？客户端表示可以每页返回超过请求的rows数量，那么我们可以考虑在一页中把下一页中相同时间戳的数据一并返回。考虑避免修改数据访问层，在中间层做一些处理。
+由于此时接口已经上线，因此接口设计无法变更。那么如何处理跨页的数据丢失问题？客户端表示可以每页返回超过请求的rows数量，那么我们可以考虑在一页中把下一页中相同时间戳的数据一并返回，以兼容旧版本客户端。
 
 ```java
     // 获取小于入参limitTime的所有数据（需要过滤掉等于limitTime的数据）
@@ -104,7 +114,7 @@ List<Resp> queryPagedListFromRedis(long userId, int rows, int pageNo) {
     }
 ```
 
-这个方法存在几个问题：
+这个实现存在几个问题：
 1. 需要在用户首次进入时获取全量数据，效率无法保证。
 2. 数据放在缓存中，需要更新维护，增加了系统复杂度。
 3. （对于旧客户端的兼容）破坏了接口的约定，请求传入rows=15返回却可能是rows=200。
@@ -136,7 +146,7 @@ List<Resp> queryPagedList(long userId, int rows, int pageNo) {
     totalList.addAll(bService.getAllIds(userId));
 
     List<RespIds> curPageIds = totalList.stream()
-                        .sorted(Comparator.comparing(RespIds::getCreateDateLong).reversed())
+                        .sorted(Comparator.comparing(RespIds::getCreateTime).reversed())
                         .skip(pageNo * rows)
                         .limit(rows)
                         .collect(Collectors.toList());

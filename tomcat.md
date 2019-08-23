@@ -1,8 +1,17 @@
 ---
 title: Tomcat新版本Host Name Validate问题
 date: 2019-05-20 11:48:00
-tags:
+tags: 
+- Tomcat
+- Spring Boot
 ---
+
+摘要：
+1. Tomcat不同版本对HTTP请求中valid characters的配置。
+2. Tomcat新版本中Host Name Validate的开启。
+3. Spring Boot和Tomcat版本间的对应关系。
+
+<!-- more -->
 
 最近将一个项目由Spring Cloud Finchely.M5升级到Greenwich.SR1，在灰度环境正常，而线上则在网关层报400 Bad Request。
 
